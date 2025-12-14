@@ -1,6 +1,183 @@
-# StreamCore - MacCMS V10 Compatible Video Aggregation System
+# StreamCore - MacCMS V10 兼容视频聚合系统
 
-## 📖 Overview
+[English](#english) | [中文](#中文)
+
+---
+
+## 中文
+
+### 📖 概述
+
+StreamCore 是一个轻量级视频聚合系统，采用**读写分离**架构，完全兼容 **MacCMS V10** API 规范。
+
+### 核心特性
+
+- 🎯 **MacCMS V10 兼容**: API 完全兼容 MacCMS 采集标准
+- 🔄 **读写分离**: 采集写入临时库，API 读取主库
+- 🗃️ **多源聚合**: 支持多个数据源采集，自动去重
+- 🔗 **数据库级合并**: 采集时自动合并重复内容（零停机）
+- 🗺️ **分类映射**: 自动将外部分类映射到本地分类
+- 🔍 **全文搜索**: 支持按名称和演员快速搜索
+- ⚡ **高性能**: SQLite + 索引实现快速查询
+
+### 🏗️ 架构
+
+```
+┌─────────────┐
+│   采集器    │ ──写入──> sc_temp.db (临时数据库)
+└─────────────┘               │
+                              │ 🆕 自动合并重复
+                              │ 原子交换
+                              ↓
+┌─────────────┐           sc_main.db (主数据库)
+│  API 服务器  │ ──读取──>    ↑
+└─────────────┘               │
+```
+
+### 🚀 快速开始
+
+#### 1. 安装依赖
+
+```bash
+cd streamCore
+pip install -r requirements.txt
+```
+
+#### 2. 初始化项目
+
+```bash
+python3 setup.py init
+```
+
+#### 3. 添加数据源
+
+```bash
+python3 setup.py add-source
+
+# 示例输入：
+# 数据源名称: 示例源
+# API URL: https://example.com/api.php/provide/vod/
+# 格式: json
+# ID 前缀: example_
+```
+
+#### 4. 映射分类
+
+```bash
+python3 setup.py map-type --source example_
+
+# 示例映射：
+# 1:1  (远程电影 → 本地电影)
+# 2:2  (远程电视剧 → 本地电视剧)
+```
+
+#### 5. 采集数据
+
+```bash
+# 完整采集
+python3 collector.py --mode full
+
+# 增量采集（最近6小时）
+python3 collector.py --mode incremental --hours 6
+
+# 仅采集详情
+python3 collector.py --mode details-only
+```
+
+#### 6. 启动 API 服务
+
+```bash
+python3 app.py
+
+# 服务地址: http://localhost:5000
+```
+
+### 📚 API 使用
+
+#### 列表接口
+
+```bash
+# 获取列表（带筛选）
+GET /api.php/provide/vod/?ac=list&t=1&pg=1
+
+# 最近24小时更新
+GET /api.php/provide/vod/?ac=list&h=24
+
+# 按地区筛选
+GET /api.php/provide/vod/?ac=list&area=香港
+
+# 按年份筛选
+GET /api.php/provide/vod/?ac=list&year=2025
+```
+
+#### 详情接口
+
+```bash
+# 按 ID 查询
+GET /api.php/provide/vod/?ac=detail&ids=1,2,3
+
+# 按关键词搜索
+GET /api.php/provide/vod/?ac=detail&wd=电影名称
+```
+
+#### 响应格式
+
+```json
+{
+  "code": 1,
+  "msg": "数据列表",
+  "page": 1,
+  "pagecount": 10,
+  "total": 200,
+  "list": [
+    {
+      "vod_id": 1,
+      "vod_name": "电影名称",
+      "vod_en": "dymn",
+      "vod_year": "2025",
+      "vod_pic": "https://example.com/poster.jpg",
+      "vod_remarks": "HD",
+      "vod_play_from": "线路1$$$线路2",
+      "vod_play_url": "第1集$url#第2集$url$$$第1集$url",
+      "vod_time": 1734156000
+    }
+  ]
+}
+```
+
+**排序规则**: 先按 `vod_year` 降序，再按 `vod_time` 降序
+
+### 🛠️ CLI 命令参考
+
+| 命令 | 说明 |
+|------|------|
+| `python3 setup.py init` | 初始化数据库 |
+| `python3 setup.py add-source` | 添加数据源 |
+| `python3 setup.py map-type --source <前缀>` | 配置分类映射 |
+| `python3 setup.py list` | 查看所有配置 |
+| `python3 collector.py --mode full` | 完整采集 |
+| `python3 collector.py --mode incremental --hours 6` | 增量采集 |
+| `python3 app.py` | 启动 API 服务 |
+
+### 📦 项目结构
+
+```
+/streamCore/
+├── requirements.txt    # 依赖
+├── db_config.py        # 数据库配置
+├── setup.py            # 设置 CLI
+├── collector.py        # 数据采集器
+├── merge_dedupe.py     # 合并脚本
+├── app.py              # Flask API
+├── sc_main.db          # 主数据库
+└── sc_temp.db          # 临时数据库
+```
+
+---
+
+## English
+
+### 📖 Overview
 
 StreamCore is a lightweight video aggregation system with **read-write isolation** architecture, fully compatible with **MacCMS V10** API specifications.
 
@@ -14,236 +191,49 @@ StreamCore is a lightweight video aggregation system with **read-write isolation
 - 🔍 **Full-Text Search**: Fast search by name and actors
 - ⚡ **High Performance**: SQLite + indexes for fast queries
 
-## 🏗️ Architecture
-
-```
-┌─────────────┐
-│  Collector  │ ──writes──> sc_temp.db (temp database)
-└─────────────┘               │
-                              │ 🆕 Auto-merge duplicates
-                              │ Atomic swap
-                              ↓
-┌─────────────┐           sc_main.db (main database)
-│  API Server │ ──reads──>    ↑
-└─────────────┘               │
-```
-
-### Database Tables
-
-- **sc_type** - Local category structure
-- **sc_config** - Source configs and category mapping
-- **sc_vod** - Video data (with merged multi-source content)
-- **sc_search** - Search optimization
-- **sc_merge_log** - Merge tracking (which sources are merged)
-
-## 🚀 Quick Start
-
-### 1. Install Dependencies
+### 🚀 Quick Start
 
 ```bash
-cd streamCore
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### 2. Initialize Project
-
-```bash
+# Initialize
 python3 setup.py init
-```
 
-### 3. Add Sources
-
-```bash
+# Add source
 python3 setup.py add-source
 
-# Example input:
-# Source name: Example Source
-# API URL: https://example.com/api.php/provide/vod/
-# Format: json
-# ID prefix: example_
-```
+# Map categories
+python3 setup.py map-type --source <prefix>
 
-### 4. Map Categories
-
-```bash
-python3 setup.py map-type --source example_
-
-# Example mapping:
-# 1:1  (remote movie → local movie)
-# 2:2  (remote TV → local TV)
-```
-
-### 5. Collect Data
-
-```bash
-# Full collection
+# Collect data
 python3 collector.py --mode full
 
-# Incremental (last 6 hours)
-python3 collector.py --mode incremental --hours 6
-
-# Details only (skip list collection)
-python3 collector.py --mode details-only
-```
-
-**Note:** Auto-merge happens automatically after collection!
-
-### 6. Start API Server
-
-```bash
+# Start API
 python3 app.py
-
-# Server: http://localhost:5000
 ```
 
-## 📚 API Usage
-
-### List Endpoint
+### 📚 API Usage
 
 ```bash
-# Get list with filters
+# List
 GET /api.php/provide/vod/?ac=list&t=1&pg=1
 
-# Last 24 hours
-GET /api.php/provide/vod/?ac=list&h=24
-```
-
-### Detail Endpoint
-
-```bash
-# Query by ID
+# Detail
 GET /api.php/provide/vod/?ac=detail&ids=1,2,3
 
-# Search by keyword
-GET /api.php/provide/vod/?ac=detail&wd=movie+name
+# Search
+GET /api.php/provide/vod/?ac=detail&wd=keyword
 ```
 
-### Response Format
+**Sort Order**: `vod_year DESC, vod_time DESC`
 
-```json
-{
-  "code": 1,
-  "msg": "数据列表",
-  "page": 1,
-  "pagecount": 10,
-  "total": 200,
-  "list": [
-    {
-      "vod_id": 1,
-      "vod_name": "Movie Name",
-      "vod_en": "mn",
-      "vod_year": "2025",
-      "vod_pic": "https://example.com/poster.jpg",
-      "vod_remarks": "HD",
-      "vod_play_from": "source1$$$source2",
-      "vod_play_url": "ep1$url#ep2$url$$$ep1$url#ep2$url",
-      "vod_time": 1734156000
-    }
-  ]
-}
-```
+### 🔧 Tech Stack
 
-## 🛠️ CLI Reference
+- Python 3.7+
+- Flask 3.0
+- SQLite 3
 
-| Command | Description |
-|---------|-------------|
-| `python3 setup.py init` | Initialize database |
-| `python3 setup.py add-source` | Add source |
-| `python3 setup.py map-type --source <prefix>` | Configure category mapping |
-| `python3 setup.py list` | View all configs |
-| `python3 collector.py --mode full` | Full collection |
-| `python3 collector.py --mode incremental --hours 6` | Incremental collection |
-| `python3 collector.py --mode details-only` | Details only |
-| `python3 app.py` | Start API server |
-
-## 📦 Project Structure
-
-```
-/StreamCore/
-├── requirements.txt    # Dependencies
-├── db_config.py        # Database schema
-├── setup.py            # Setup CLI
-├── collector.py        # Data collector (with auto-merge)
-├── merge_dedupe.py     # Merge script
-├── app.py              # Flask API
-├── sc_main.db          # Main DB (API reads from)
-└── sc_temp.db          # Temp DB (collector writes to)
-```
-
-## ⚙️ Advanced Features
-
-### Auto-Merge on Collection
-
-**What it does:**
-- Finds duplicate records (same name + year)
-- Merges play sources using MacCMS 10 format
-- Tracks source relationships in `sc_merge_log`
-
-**Example:**
-```
-Before merge:
-  - vod_id=1: 功夫 (2004) from source "wj"
-  - vod_id=2: 功夫 (2004) from source "mt"
-
-After merge:
-  - vod_id=1: 功夫 (2004)
-    vod_play_from: "wj$$$mt"
-    vod_play_url: "wj_episodes$$$mt_episodes"
-```
-
-### Scheduled Collection
-
-```bash
-# Cron: Daily at 2 AM
-0 2 * * * cd /path/to/streamCore && python3 collector.py --mode incremental --hours 24
-```
-
-### Production Deployment
-
-```bash
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 app:app
-```
-
-## 🔧 Tech Stack
-
-- **Python 3.7+**
-- **Flask 3.0** - Web framework
-- **SQLite 3** - Database
-- **Requests 2.31** - HTTP client
-
-## 📝 Key Features
-
-1. **MacCMS Compatibility**: Fully compatible with MacCMS V10 standards
-2. **Smart Deduplication**: Database-level merge for fast queries (no runtime overhead)
-3. **Category Mapping**: External category IDs mapped to local taxonomy
-4. **Read-Write Isolation**: Collection doesn't impact API response time
-5. **Atomic Swap**: Database file replacement is atomic (~10ms downtime)
-6. **Source Tracking**: Know which sources are merged together
-
-## 🤝 vs MacCMS
-
-### Kept Features
-- ✅ Resource collection
-- ✅ Data storage
-- ✅ API endpoints
-- ✅ Category mapping
-- ✅ Search functionality
-- ✅ Multi-source merge
-
-### Simplified Features
-- ❌ User system
-- ❌ Comments
-- ❌ Complex actor relationships
-- ❌ Frontend UI
-- ❌ Player integration
-
-StreamCore focuses on **resource aggregation** and **API provision**, allowing you to quickly build your own video resource platform.
-
-## 📄 License
+### 📄 License
 
 MIT License
-
-## 🙋 Support
-
-For questions, check project documentation or submit an issue.
