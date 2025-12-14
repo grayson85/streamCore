@@ -1,0 +1,33 @@
+# Database files
+*.db
+*.db.bak
+sc_main.db.*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+
+# Logs
+*.log
+server.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Releases (APK files)
+releases/
+
+# Environment
+.env
+venv/
+env/
