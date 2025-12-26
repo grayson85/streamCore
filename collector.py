@@ -281,6 +281,91 @@ def collect_details_for_source(temp_conn, source):
     
     return update_count
 
+def sync_hot_rank_to_new_records(conn):
+    """
+    Synchronize hot_rank to the newest record for each video.
+    Specific to handling cases where a new ID is generated for the same video (e.g. new episodes).
+    """
+    print(f"\n" + "=" * 70)
+    print(f"🔄 Syncing Hot Rank to Newest Records")
+    print(f"=" * 70)
+    
+    cursor = conn.cursor()
+    
+    try:
+        # Check if hot_rank column exists
+        cursor.execute("PRAGMA table_info(sc_vod)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'hot_rank' not in columns:
+            print("   ⚠️  hot_rank column not found, skipping sync")
+            return 0
+
+        # Find all names that have a hot_rank set to something other than 0
+        cursor.execute("SELECT DISTINCT vod_name FROM sc_vod WHERE hot_rank > 0")
+        hot_names = [row[0] for row in cursor.fetchall()]
+        
+        migrated_count = 0
+        
+        for name in hot_names:
+            try:
+                # Find all records for this name, ordered by vod_time DESC, then vod_id DESC
+                cursor.execute("SELECT vod_id, hot_rank, vod_time FROM sc_vod WHERE vod_name = ? ORDER BY vod_time DESC, vod_id DESC", (name,))
+                records = cursor.fetchall()
+                
+                if not records or len(records) < 1:
+                    continue
+                    
+                # Newest is the first record
+                newest_id = records[0][0]
+                
+                # Calculate the max rank among all these records (to preserve the highest rank if duplicates have different ranks)
+                target_rank = 0
+                for r in records:
+                    if r[1] > 0:
+                        target_rank = max(target_rank, r[1])
+                
+                # Check if we need to update anything
+                # We need update if:
+                # 1. The newest record doesn't have the target rank
+                # 2. OR any other older record HAS a non-zero rank
+                
+                needs_update = False
+                if records[0][1] != target_rank:
+                    needs_update = True
+                
+                for r in records[1:]:
+                    if r[1] > 0:
+                        needs_update = True
+                        break
+                
+                if not needs_update:
+                    continue
+
+                print(f"   🔄 Migrating hot_rank {target_rank} for '{name}' to newest ID {newest_id}")
+                
+                # Reset all to 0 first
+                cursor.execute("UPDATE sc_vod SET hot_rank = 0 WHERE vod_name = ?", (name,))
+                
+                # Set the newest one to target_rank
+                cursor.execute("UPDATE sc_vod SET hot_rank = ? WHERE vod_id = ?", (target_rank, newest_id))
+                
+                migrated_count += 1
+                
+            except Exception as e:
+                print(f"   ⚠️  Error syncing '{name}': {e}")
+                
+        conn.commit()
+        if migrated_count > 0:
+            print(f"✅ Migrated hot_rank for {migrated_count} videos")
+        else:
+            print(f"✅ No queries needed migration")
+            
+        return migrated_count
+            
+    except Exception as e:
+        print(f"❌ Hot rank sync failed: {e}")
+        return 0
+
 def swap_database_files():
     """
     原子性替换数据库文件，将 TEMP_DB 覆盖 MAIN_DB
@@ -860,6 +945,10 @@ Note: All modes automatically merge duplicates before database swap!
             
             print(f"\n✅ 详细数据采集完成，共更新 {detail_total} 条记录")
         
+        # 🆕 Sync hot_rank to newest records (Server-side fix for stale IDs)
+        # Always run this to auto-heal the database even if no new data was collected
+        migrated_hot_rank_count = sync_hot_rank_to_new_records(temp_conn)
+        
         temp_conn.close()
         
         # Summary statistics
@@ -869,6 +958,7 @@ Note: All modes automatically merge duplicates before database swap!
         print(f"✅ 处理资源站数: {success_count}/{len(sources)}")
         print(f"📦 新增记录数: {total_collected}")
         print(f"📦 更新详细信息数: {detail_total}")
+        print(f"🔄 热榜迁移数: {migrated_hot_rank_count}")
         print(f"⏰ 完成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # 🆕 Auto-merge duplicates in TEMP database (before swap)
@@ -891,7 +981,8 @@ Note: All modes automatically merge duplicates before database swap!
                 print(f"   Continuing without merge...")
         
         # Execute database file switch
-        if total_collected > 0 or detail_total > 0:
+        # Enable swap if ANY data was changed (collected, detail updated, OR hot rank migrated)
+        if total_collected > 0 or detail_total > 0 or migrated_hot_rank_count > 0:
             print("\n" + "=" * 70)
             print("🔄 执行数据库文件切换")
             print("=" * 70)

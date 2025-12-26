@@ -6,6 +6,7 @@ from flask import Flask, jsonify, request
 from db_config import get_db_connection, MAIN_DB
 import os
 import time
+import requests
 
 app = Flask(__name__)
 
@@ -14,6 +15,32 @@ app.config['JSON_AS_ASCII'] = False
 # 禁用 Flask 的 JSON 键排序，保持原始顺序
 app.config['JSON_SORT_KEYS'] = False
 
+# ============================================================
+# 豆瓣热搜 API 配置
+# ============================================================
+
+# 豆瓣移动端 API 基础地址
+DOUBAN_API_BASE = "https://m.douban.com/rexxar/api/v2/subject/recent_hot"
+
+# 请求头（模拟微信内置浏览器）
+DOUBAN_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/7.0.13(0x17000d2b) NetType/WIFI Language/zh_CN',
+    'Referer': 'https://m.douban.com/tv/show'
+}
+
+# 热搜类型配置
+HOT_TYPE_CONFIG = {
+    'movie': {'url': f'{DOUBAN_API_BASE}/movie?start=0&limit=40', 'msg': '热门电影'},
+    'newmovie': {'url': f'{DOUBAN_API_BASE}/movie?start=0&limit=40&category=%E6%9C%80%E6%96%B0&type=%E5%85%A8%E9%83%A8', 'msg': '最新电影'},
+    'tv': {'url': f'{DOUBAN_API_BASE}/tv?start=0&limit=40&category=tv&type=tv', 'msg': '热门电视剧'},
+    'show': {'url': f'{DOUBAN_API_BASE}/tv?start=0&limit=40&category=show&type=show', 'msg': '热门综艺'}
+}
+
+# 缓存配置（6小时）
+HOT_CACHE_DURATION = 6 * 60 * 60
+hot_cache = {}  # {hot_type: {'data': [...], 'timestamp': time}}
+
+@app.route('/api.php/provide/vod', methods=['GET'])
 @app.route('/api.php/provide/vod/', methods=['GET'])
 def maccms_api():
     """
@@ -52,6 +79,8 @@ def maccms_api():
             return handle_list_action(cursor, request)
         elif action == 'detail':
             return handle_detail_action(cursor, request)
+        elif action == 'hot':
+            return handle_hot_action(cursor, request)
         else:
             return jsonify({
                 'code': 0,
@@ -209,7 +238,7 @@ def handle_list_action(cursor, request):
         SELECT vod_id
         FROM sc_vod
         {where_sql}
-        ORDER BY vod_year DESC, vod_time DESC
+        ORDER BY vod_time DESC
         LIMIT ? OFFSET ?
     """
     cursor.execute(list_sql, params + [limit, offset])
@@ -222,6 +251,20 @@ def handle_list_action(cursor, request):
     else:
         vod_list = []
     
+    # Fetch class list for MacCMS compatibility and dynamic filtering
+    class_list = []
+    try:
+        cursor.execute("SELECT type_id, type_name, type_pid FROM sc_type")
+        types = cursor.fetchall()
+        for t in types:
+            class_list.append({
+                'type_id': t['type_id'],
+                'type_name': t['type_name'],
+                'type_pid': t['type_pid']
+            })
+    except Exception as e:
+        print(f"Error fetching class list: {e}")
+
     # Build response with accurate counts
     response = {
         'code': 1,
@@ -230,7 +273,8 @@ def handle_list_action(cursor, request):
         'pagecount': pagecount,
         'limit': len(vod_list),  # Actual count after deduplication
         'total': total,  # Keep original total for pagination
-        'list': vod_list
+        'list': vod_list,
+        'class': class_list
     }
     
     # 使用 Response 对象确保中文正常显示
@@ -290,7 +334,7 @@ def handle_detail_action(cursor, request):
                 cursor.execute("""
                     SELECT vod_id FROM sc_vod 
                     WHERE vod_en GLOB '[0-9]*'
-                    ORDER BY vod_year DESC, vod_time DESC
+                    ORDER BY vod_time DESC
                     LIMIT ? OFFSET ?
                 """, (limit, offset))
                 
@@ -314,7 +358,7 @@ def handle_detail_action(cursor, request):
                 cursor.execute("""
                     SELECT vod_id FROM sc_vod 
                     WHERE UPPER(vod_en) LIKE ?
-                    ORDER BY vod_year DESC, vod_time DESC
+                    ORDER BY vod_time DESC
                     LIMIT ? OFFSET ?
                 """, (like_pattern, limit, offset))
                 
@@ -356,7 +400,7 @@ def handle_detail_action(cursor, request):
                 SELECT vod_id 
                 FROM sc_vod 
                 WHERE vod_time >= ?
-                ORDER BY vod_year DESC, vod_time DESC
+                ORDER BY vod_time DESC
                 LIMIT 100
             """, (time_threshold,))
             
@@ -621,6 +665,193 @@ def deduplicate_vod_list(vod_list):
     return merged_list
 
 # ============================================================
+# 豆瓣热搜 API 功能
+# ============================================================
+
+def fetch_douban_hot(hot_type):
+    """
+    从豆瓣获取热门影视列表
+    
+    Args:
+        hot_type: 热搜类型 (movie/newmovie/tv/show)
+        
+    Returns:
+        list: 豆瓣返回的影片列表 [{title, id, rating, pic, ...}, ...]
+    """
+    if hot_type not in HOT_TYPE_CONFIG:
+        return []
+    
+    config = HOT_TYPE_CONFIG[hot_type]
+    
+    try:
+        response = requests.get(config['url'], headers=DOUBAN_HEADERS, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        
+        # 提取 items 列表
+        items = data.get('items', [])
+        print(f"✅ 豆瓣{config['msg']}获取成功: {len(items)} 部")
+        return items
+        
+    except requests.RequestException as e:
+        print(f"❌ 豆瓣 API 请求失败: {e}")
+        return []
+    except Exception as e:
+        print(f"❌ 豆瓣数据解析失败: {e}")
+        return []
+
+
+def match_local_vod(cursor, douban_items):
+    """
+    将豆瓣影片与本地数据库匹配（优化版：批量查询）
+    
+    Args:
+        cursor: 数据库游标
+        douban_items: 豆瓣返回的影片列表
+        
+    Returns:
+        list: 匹配到的本地 vod 列表，保持原始热度排序
+    """
+    # Phase 1: Collect all vod_ids with their ranks (fast matching phase)
+    matched_ids = []  # [(vod_id, rank, title), ...]
+    
+    for rank, item in enumerate(douban_items, 1):
+        title = item.get('title', '').strip()
+        if not title:
+            continue
+        
+        # 精确匹配
+        cursor.execute("SELECT vod_id FROM sc_vod WHERE vod_name = ? LIMIT 1", (title,))
+        result = cursor.fetchone()
+        
+        # 如果精确匹配失败，尝试模糊匹配（去掉季数等后缀）
+        if not result:
+            # 例如："曼哈顿金牌经纪 第二季" -> 尝试匹配 "曼哈顿金牌经纪%"
+            base_title = title.split(' 第')[0].strip()
+            if base_title != title:
+                cursor.execute("SELECT vod_id FROM sc_vod WHERE vod_name LIKE ? LIMIT 1", (f"{base_title}%",))
+                result = cursor.fetchone()
+        
+        if result:
+            vod_id = str(result['vod_id'])
+            matched_ids.append((vod_id, rank, title))
+            print(f"  ✓ [{rank}] {title} -> vod_id={vod_id}")
+        else:
+            print(f"  ✗ [{rank}] {title} (未匹配)")
+    
+    if not matched_ids:
+        return []
+    
+    # Phase 2: Batch fetch all vod details in ONE query
+    vod_ids = [m[0] for m in matched_ids]
+    vod_details_list = fetch_vod_details(cursor, vod_ids)
+    
+    # Build lookup map: vod_id -> vod_details
+    vod_map = {str(v['vod_id']): v for v in vod_details_list}
+    
+    # Phase 3: Reconstruct ordered list with hot_rank
+    matched_vods = []
+    for vod_id, rank, title in matched_ids:
+        if vod_id in vod_map:
+            vod = vod_map[vod_id].copy()
+            vod['hot_rank'] = rank
+            matched_vods.append(vod)
+    
+    return matched_vods
+
+
+def handle_hot_action(cursor, request):
+    """
+    处理热搜请求
+    
+    Args:
+        cursor: 数据库游标
+        request: Flask 请求对象
+        
+    Returns:
+        Flask JSON 响应
+    """
+    import json
+    from flask import Response
+    
+    hot_type = request.args.get('hot', 'movie')
+    
+    if hot_type not in HOT_TYPE_CONFIG:
+        return jsonify({
+            'code': 0,
+            'msg': f'无效的热搜类型: {hot_type}，支持: movie/newmovie/tv/show'
+        }), 400
+    
+    config = HOT_TYPE_CONFIG[hot_type]
+    now = time.time()
+    
+    # 检查缓存
+    if hot_type in hot_cache:
+        cache_entry = hot_cache[hot_type]
+        cache_age = now - cache_entry['timestamp']
+        if cache_age < HOT_CACHE_DURATION:
+            print(f"📦 使用缓存: {config['msg']} (剩余 {int((HOT_CACHE_DURATION - cache_age) / 3600)} 小时)")
+            vod_list = cache_entry['matched_vods']
+            
+            response = {
+                'code': 1,
+                'msg': config['msg'],
+                'page': 1,
+                'pagecount': 1,
+                'limit': len(vod_list),
+                'total': len(vod_list),
+                'list': vod_list,
+                'cache': True,
+                'cache_age_hours': round(cache_age / 3600, 1)
+            }
+            
+            return Response(
+                json.dumps(response, ensure_ascii=False),
+                mimetype='application/json'
+            )
+    
+    # 缓存过期或不存在，重新请求
+    print(f"🔄 请求豆瓣 API: {config['msg']}")
+    douban_items = fetch_douban_hot(hot_type)
+    
+    if not douban_items:
+        return jsonify({
+            'code': 0,
+            'msg': f'无法获取{config["msg"]}数据'
+        }), 500
+    
+    # 匹配本地数据库
+    print(f"🔍 开始匹配本地数据库...")
+    matched_vods = match_local_vod(cursor, douban_items)
+    
+    # 更新缓存
+    hot_cache[hot_type] = {
+        'douban_items': douban_items,
+        'matched_vods': matched_vods,
+        'timestamp': now
+    }
+    print(f"💾 缓存已更新: {config['msg']} ({len(matched_vods)}/{len(douban_items)} 匹配)")
+    
+    # 构建响应
+    response = {
+        'code': 1,
+        'msg': config['msg'],
+        'page': 1,
+        'pagecount': 1,
+        'limit': len(matched_vods),
+        'total': len(matched_vods),
+        'list': matched_vods,
+        'cache': False,
+        'douban_total': len(douban_items)
+    }
+    
+    return Response(
+        json.dumps(response, ensure_ascii=False),
+        mimetype='application/json'
+    )
+
+
+# ============================================================
 # 应用更新相关接口
 # ============================================================
 
@@ -638,6 +869,7 @@ def get_app_version_config():
         "HBbb": "2.0",  # 当前最新版本号
         "HBnr": "暂无更新",  # 更新内容说明
         "HBxz": "",  # APK下载地址（空表示无更新）
+        "HBgg": "",  # 滚动公告文字
         "force_update": False  # 是否强制更新
     }
     
