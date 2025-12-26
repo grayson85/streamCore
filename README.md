@@ -120,6 +120,24 @@ GET /api.php/provide/vod/?ac=detail&ids=1,2,3
 GET /api.php/provide/vod/?ac=detail&wd=电影名称
 ```
 
+#### 热搜接口（豆瓣热门）
+
+```bash
+# 热门电影（返回最多40部）
+GET /api.php/provide/vod/?ac=hot&hot=movie
+
+# 最新电影
+GET /api.php/provide/vod/?ac=hot&hot=newmovie
+
+# 热门电视剧
+GET /api.php/provide/vod/?ac=hot&hot=tv
+
+# 热门综艺
+GET /api.php/provide/vod/?ac=hot&hot=show
+```
+
+> 热搜数据来自豆瓣，自动匹配本地数据库，缓存6小时
+
 #### 响应格式
 
 ```json
@@ -224,6 +242,12 @@ GET /api.php/provide/vod/?ac=detail&ids=1,2,3
 
 # Search
 GET /api.php/provide/vod/?ac=detail&wd=keyword
+
+# Hot/Trending (Douban data, max 40 items, cached 6h)
+GET /api.php/provide/vod/?ac=hot&hot=movie      # Hot movies
+GET /api.php/provide/vod/?ac=hot&hot=newmovie   # New movies
+GET /api.php/provide/vod/?ac=hot&hot=tv         # Hot TV series
+GET /api.php/provide/vod/?ac=hot&hot=show       # Hot variety shows
 ```
 
 **Sort Order**: `vod_year DESC, vod_time DESC`
